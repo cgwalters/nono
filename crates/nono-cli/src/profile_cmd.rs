@@ -6,7 +6,8 @@
 
 use crate::cli::{
     ProfileCmdArgs, ProfileCommands, ProfileDiffArgs, ProfileGroupsArgs, ProfileGuideArgs,
-    ProfileInitArgs, ProfileListArgs, ProfileSchemaArgs, ProfileShowArgs, ProfileValidateArgs,
+    ProfileInitArgs, ProfileListArgs, ProfilePromoteArgs, ProfileSchemaArgs, ProfileShowArgs,
+    ProfileValidateArgs,
 };
 use crate::config::embedded;
 use crate::policy::{self, AllowOps, DenyOps, Group};
@@ -14,9 +15,13 @@ use crate::profile::{self, Profile, WorkdirAccess};
 use crate::theme;
 use colored::Colorize;
 use nono::{NonoError, Result};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::Path;
 
 /// Serialize a value to pretty-printed JSON, propagating serialization errors.
 fn to_json(val: &serde_json::Value) -> Result<String> {
@@ -38,6 +43,7 @@ pub fn run_profile(args: ProfileCmdArgs) -> Result<()> {
         ProfileCommands::Show(args) => cmd_show(args),
         ProfileCommands::Diff(args) => cmd_diff(args),
         ProfileCommands::Validate(args) => cmd_validate(args),
+        ProfileCommands::Promote(args) => cmd_promote(args),
         ProfileCommands::Groups(args) => cmd_groups(args),
         ProfileCommands::Schema(args) => cmd_schema(args),
         ProfileCommands::Guide(args) => cmd_guide(args),
@@ -2167,6 +2173,19 @@ fn resolve_validate_target(input: &std::path::Path) -> std::path::PathBuf {
     input.to_path_buf()
 }
 
+fn resolve_validate_draft_target(input: &std::path::Path) -> Result<std::path::PathBuf> {
+    let name = input.to_str().ok_or_else(|| {
+        NonoError::ProfileParse(format!("invalid draft profile name '{}'", input.display()))
+    })?;
+    if !profile::is_valid_profile_name(name) {
+        return Err(NonoError::ProfileParse(format!(
+            "invalid draft profile name '{}'",
+            name
+        )));
+    }
+    profile::get_user_profile_draft_path(name)
+}
+
 pub(crate) fn cmd_validate(args: ProfileValidateArgs) -> Result<()> {
     let pol = policy::load_embedded_policy()?;
     let mut errors: Vec<String> = Vec::new();
@@ -2177,7 +2196,11 @@ pub(crate) fn cmd_validate(args: ProfileValidateArgs) -> Result<()> {
     // `args.file = PathBuf::from("claude-docs")`. If that doesn't exist as
     // a file, treat it as a profile name and look it up the same way
     // `--profile` does.
-    let target_path = resolve_validate_target(&args.file);
+    let target_path = if args.draft {
+        resolve_validate_draft_target(&args.file)?
+    } else {
+        resolve_validate_target(&args.file)
+    };
 
     // Step 1: Load profile (parse JSON + resolve inheritance).
     //
@@ -2324,6 +2347,308 @@ pub(crate) fn cmd_validate(args: ProfileValidateArgs) -> Result<()> {
         emit_deprecation_summary(deprecation_count);
         Err(NonoError::ProfileParse("validation failed".into()))
     }
+}
+
+// ---------------------------------------------------------------------------
+// nono profile promote
+// ---------------------------------------------------------------------------
+
+pub(crate) fn cmd_promote(args: ProfilePromoteArgs) -> Result<()> {
+    if args.diff && args.yes {
+        return Err(NonoError::ProfileParse(
+            "`--diff` cannot be combined with `--yes`".to_string(),
+        ));
+    }
+    if !profile::is_valid_profile_name(&args.name) {
+        return Err(NonoError::ProfileParse(format!(
+            "invalid draft profile name '{}'",
+            args.name
+        )));
+    }
+
+    let draft_path = profile::get_user_profile_draft_path(&args.name)?;
+    let base_path = profile::get_user_profile_draft_base_path(&args.name)?;
+    let target_path = profile::get_user_profile_path(&args.name)?;
+
+    let draft_bytes = read_regular_file(&draft_path, "profile draft")?;
+    let raw_profile = profile::parse_profile_bytes(&draft_bytes)?;
+    if raw_profile.meta.name != args.name {
+        return Err(NonoError::ProfileParse(format!(
+            "draft meta.name '{}' does not match draft name '{}'",
+            raw_profile.meta.name, args.name
+        )));
+    }
+    let resolved_profile = profile::resolve_and_finalize_profile(raw_profile)?;
+    validate_promote_profile(&resolved_profile)?;
+
+    let target_exists = regular_file_exists(&target_path, "target profile")?;
+    let current_bytes = if target_exists {
+        Some(read_regular_file(&target_path, "target profile")?)
+    } else {
+        None
+    };
+
+    if current_bytes.is_none() {
+        if let Some(source) = reserved_profile_source(&args.name)? {
+            return Err(NonoError::ProfileParse(format!(
+                "refusing to promote '{}' because it would shadow a {source} profile. \
+                 Draft a derived profile such as '{}-local' with \"extends\": \"{}\" instead.",
+                args.name, args.name, args.name
+            )));
+        }
+    }
+
+    if let Some(current) = current_bytes.as_deref() {
+        verify_base_hash(&base_path, current)?;
+    }
+
+    print_promote_diff(&args.name, current_bytes.as_deref(), &draft_bytes);
+    if args.diff {
+        return Ok(());
+    }
+
+    if !args.yes && !crate::profile_save_runtime::confirm("Promote this draft? [y/N] ", false)? {
+        eprintln!("{} promotion skipped", prefix());
+        return Ok(());
+    }
+
+    atomic_write_file(&target_path, &draft_bytes)?;
+    let _ = fs::remove_file(&draft_path);
+    let _ = fs::remove_file(&base_path);
+
+    eprintln!(
+        "{} Promoted draft to {}",
+        prefix(),
+        target_path.display().to_string().bold()
+    );
+    Ok(())
+}
+
+fn validate_promote_profile(profile: &Profile) -> Result<()> {
+    let pol = policy::load_embedded_policy()?;
+    let mut errors = Vec::new();
+
+    for group_name in &profile.groups.include {
+        if !pol.groups.contains_key(group_name) {
+            errors.push(format!("group '{}' not found in policy.json", group_name));
+        }
+    }
+
+    for excluded in &profile.groups.exclude {
+        match pol.groups.get(excluded) {
+            Some(group) if group.required => {
+                errors.push(format!("cannot exclude required group '{}'", excluded));
+            }
+            Some(_) | None => {}
+        }
+    }
+
+    for (label, paths) in [
+        ("filesystem.allow", &profile.filesystem.allow),
+        ("filesystem.read", &profile.filesystem.read),
+        ("filesystem.write", &profile.filesystem.write),
+        ("filesystem.allow_file", &profile.filesystem.allow_file),
+        ("filesystem.read_file", &profile.filesystem.read_file),
+        ("filesystem.write_file", &profile.filesystem.write_file),
+    ] {
+        if paths.iter().any(|path| path.trim().is_empty()) {
+            errors.push(format!("empty path in {label}"));
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(NonoError::ProfileParse(format!(
+            "draft profile failed validation: {}",
+            errors.join("; ")
+        )))
+    }
+}
+
+fn reserved_profile_source(name: &str) -> Result<Option<&'static str>> {
+    let pol = policy::load_embedded_policy()?;
+    if pol.profiles.contains_key(name) {
+        return Ok(Some("built-in"));
+    }
+    if profile::find_pack_store_profile(name).is_some() {
+        return Ok(Some("installed pack"));
+    }
+    Ok(None)
+}
+
+fn verify_base_hash(base_path: &Path, current_bytes: &[u8]) -> Result<()> {
+    let base_bytes = read_regular_file(base_path, "profile draft base hash")?;
+    let provided = std::str::from_utf8(&base_bytes)
+        .map_err(|e| NonoError::ProfileParse(format!("base hash is not UTF-8: {e}")))?
+        .trim();
+    if provided.len() != 64 || !provided.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(NonoError::ProfileParse(format!(
+            "invalid base hash in {}",
+            base_path.display()
+        )));
+    }
+
+    let current = sha256_hex(current_bytes);
+    if !provided.eq_ignore_ascii_case(&current) {
+        return Err(NonoError::ProfileParse(
+            "draft base hash does not match current profile. The profile changed after the draft was written; regenerate or review the draft before promoting."
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn read_regular_file(path: &Path, label: &str) -> Result<Vec<u8>> {
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        options.custom_flags(nix::libc::O_NOFOLLOW);
+    }
+    let mut file = options.open(path).map_err(|e| NonoError::ProfileRead {
+        path: path.to_path_buf(),
+        source: e,
+    })?;
+    let metadata = file.metadata().map_err(|e| NonoError::ProfileRead {
+        path: path.to_path_buf(),
+        source: e,
+    })?;
+    if !metadata.file_type().is_file() {
+        return Err(NonoError::ProfileParse(format!(
+            "{label} is not a regular file: {}",
+            path.display()
+        )));
+    }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .map_err(|e| NonoError::ProfileRead {
+            path: path.to_path_buf(),
+            source: e,
+        })?;
+    Ok(bytes)
+}
+
+fn regular_file_exists(path: &Path, label: &str) -> Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() {
+                return Err(NonoError::ProfileParse(format!(
+                    "{label} must not be a symlink: {}",
+                    path.display()
+                )));
+            }
+            if !metadata.file_type().is_file() {
+                return Err(NonoError::ProfileParse(format!(
+                    "{label} is not a regular file: {}",
+                    path.display()
+                )));
+            }
+            Ok(true)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(NonoError::ProfileRead {
+            path: path.to_path_buf(),
+            source: error,
+        }),
+    }
+}
+
+fn atomic_write_file(path: &Path, contents: &[u8]) -> Result<()> {
+    let parent = path.parent().ok_or_else(|| {
+        NonoError::ProfileParse(format!("invalid profile path {}", path.display()))
+    })?;
+    fs::create_dir_all(parent).map_err(|e| NonoError::ProfileRead {
+        path: parent.to_path_buf(),
+        source: e,
+    })?;
+
+    let file_name = path.file_name().ok_or_else(|| {
+        NonoError::ProfileParse(format!("invalid profile path {}", path.display()))
+    })?;
+    let mut tmp_name = std::ffi::OsString::from(".");
+    tmp_name.push(file_name);
+    tmp_name.push(format!(".tmp.{}", std::process::id()));
+    let tmp_path = parent.join(tmp_name);
+
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&tmp_path)
+        .map_err(|e| NonoError::ProfileRead {
+            path: tmp_path.clone(),
+            source: e,
+        })?;
+    if let Err(error) = file.write_all(contents) {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(NonoError::ProfileRead {
+            path: tmp_path,
+            source: error,
+        });
+    }
+    if let Err(error) = file.sync_all() {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(NonoError::ProfileRead {
+            path: tmp_path,
+            source: error,
+        });
+    }
+    drop(file);
+
+    if let Err(error) = fs::rename(&tmp_path, path) {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(NonoError::ProfileRead {
+            path: path.to_path_buf(),
+            source: error,
+        });
+    }
+    Ok(())
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn print_promote_diff(name: &str, current: Option<&[u8]>, draft: &[u8]) {
+    use similar::{ChangeTag, TextDiff};
+
+    let old_text = current
+        .map(String::from_utf8_lossy)
+        .unwrap_or_else(|| "".into());
+    let new_text = String::from_utf8_lossy(draft);
+    let t = theme::current();
+
+    println!(
+        "{}: promote draft '{}'",
+        prefix(),
+        theme::fg(name, t.text).bold()
+    );
+    println!();
+    println!("  {}", theme::fg("Diff:", t.subtext).bold());
+    println!("--- profiles/{name}.json");
+    println!("+++ profile-drafts/{name}.json");
+
+    let diff = TextDiff::from_lines(&old_text, &new_text);
+    let mut changed = false;
+    for change in diff.iter_all_changes() {
+        match change.tag() {
+            ChangeTag::Delete => {
+                changed = true;
+                print!("{}", format!("-{change}").red());
+            }
+            ChangeTag::Insert => {
+                changed = true;
+                print!("{}", format!("+{change}").green());
+            }
+            ChangeTag::Equal => print!(" {change}"),
+        }
+    }
+    if !changed {
+        println!("  {}", theme::fg("(no differences)", t.subtext));
+    }
+    println!();
 }
 
 /// Print the deprecation summary line to stderr when any legacy keys were
@@ -3139,8 +3464,10 @@ mod tests {
 
         let args = ProfileValidateArgs {
             file: path,
+            draft: false,
             json: false,
             strict: false,
+            help: None,
         };
         let result = cmd_validate(args);
         assert!(result.is_ok(), "valid profile should pass validation");
@@ -3161,8 +3488,10 @@ mod tests {
 
         let args = ProfileValidateArgs {
             file: path,
+            draft: false,
             json: false,
             strict: false,
+            help: None,
         };
         let result = cmd_validate(args);
         assert!(result.is_err(), "invalid group should fail validation");
@@ -3183,13 +3512,143 @@ mod tests {
 
         let args = ProfileValidateArgs {
             file: path,
+            draft: false,
             json: false,
             strict: false,
+            help: None,
         };
         let result = cmd_validate(args);
         assert!(
             result.is_err(),
             "excluding required group should fail validation"
+        );
+    }
+
+    #[test]
+    fn promote_creates_new_profile_from_draft_and_removes_draft() {
+        let _guard = match crate::test_env::ENV_LOCK.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let dir = tempfile::tempdir().expect("tempdir");
+        let xdg = dir.path().join("config");
+        std::fs::create_dir_all(&xdg).expect("create xdg");
+        let xdg_str = xdg.to_str().expect("utf8 xdg");
+        let _env = crate::test_env::EnvVarGuard::set_all(&[("XDG_CONFIG_HOME", xdg_str)]);
+
+        let draft_dir = profile::user_profile_draft_dir().expect("draft dir");
+        std::fs::create_dir_all(&draft_dir).expect("create drafts");
+        let draft_path = profile::get_user_profile_draft_path("agent-local").expect("draft path");
+        std::fs::write(
+            &draft_path,
+            r#"{
+  "meta": { "name": "agent-local" },
+  "filesystem": { "read": ["/tmp"] }
+}
+"#,
+        )
+        .expect("write draft");
+
+        let result = cmd_promote(ProfilePromoteArgs {
+            name: "agent-local".to_string(),
+            diff: false,
+            yes: true,
+            help: None,
+        });
+        assert!(result.is_ok(), "promote should succeed: {result:?}");
+        let target = profile::get_user_profile_path("agent-local").expect("target path");
+        assert!(target.exists(), "target profile should exist");
+        assert!(
+            !draft_path.exists(),
+            "draft should be removed after promote"
+        );
+    }
+
+    #[test]
+    fn promote_existing_profile_requires_matching_base_hash() {
+        let _guard = match crate::test_env::ENV_LOCK.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let dir = tempfile::tempdir().expect("tempdir");
+        let xdg = dir.path().join("config");
+        std::fs::create_dir_all(&xdg).expect("create xdg");
+        let xdg_str = xdg.to_str().expect("utf8 xdg");
+        let _env = crate::test_env::EnvVarGuard::set_all(&[("XDG_CONFIG_HOME", xdg_str)]);
+
+        let profiles_dir = profile::user_profile_dir().expect("profile dir");
+        let draft_dir = profile::user_profile_draft_dir().expect("draft dir");
+        std::fs::create_dir_all(&profiles_dir).expect("create profiles");
+        std::fs::create_dir_all(&draft_dir).expect("create drafts");
+
+        let target = profile::get_user_profile_path("agent-local").expect("target path");
+        let old = b"{\n  \"meta\": { \"name\": \"agent-local\" },\n  \"filesystem\": { \"read\": [\"/tmp\"] }\n}\n";
+        std::fs::write(&target, old).expect("write target");
+        let draft = profile::get_user_profile_draft_path("agent-local").expect("draft path");
+        std::fs::write(
+            &draft,
+            "{\n  \"meta\": { \"name\": \"agent-local\" },\n  \"filesystem\": { \"read\": [\"/var/tmp\"] }\n}\n",
+        )
+        .expect("write draft");
+
+        let missing_base = cmd_promote(ProfilePromoteArgs {
+            name: "agent-local".to_string(),
+            diff: false,
+            yes: true,
+            help: None,
+        });
+        assert!(
+            missing_base.is_err(),
+            "existing profile promote must require .base"
+        );
+
+        let base = profile::get_user_profile_draft_base_path("agent-local").expect("base path");
+        std::fs::write(&base, sha256_hex(old)).expect("write base");
+        let result = cmd_promote(ProfilePromoteArgs {
+            name: "agent-local".to_string(),
+            diff: false,
+            yes: true,
+            help: None,
+        });
+        assert!(result.is_ok(), "promote should succeed: {result:?}");
+        let promoted = std::fs::read_to_string(&target).expect("read promoted");
+        assert!(promoted.contains("/var/tmp"));
+    }
+
+    #[test]
+    fn promote_refuses_to_shadow_builtin_profile() {
+        let _guard = match crate::test_env::ENV_LOCK.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let dir = tempfile::tempdir().expect("tempdir");
+        let xdg = dir.path().join("config");
+        std::fs::create_dir_all(&xdg).expect("create xdg");
+        let xdg_str = xdg.to_str().expect("utf8 xdg");
+        let _env = crate::test_env::EnvVarGuard::set_all(&[("XDG_CONFIG_HOME", xdg_str)]);
+
+        let draft_dir = profile::user_profile_draft_dir().expect("draft dir");
+        std::fs::create_dir_all(&draft_dir).expect("create drafts");
+        let draft_path = profile::get_user_profile_draft_path("default").expect("draft path");
+        std::fs::write(
+            &draft_path,
+            r#"{
+  "meta": { "name": "default" },
+  "filesystem": { "read": ["/tmp"] }
+}
+"#,
+        )
+        .expect("write draft");
+
+        let result = cmd_promote(ProfilePromoteArgs {
+            name: "default".to_string(),
+            diff: false,
+            yes: true,
+            help: None,
+        });
+        assert!(
+            result.is_err(),
+            "promote should refuse to shadow built-in profiles"
         );
     }
 }

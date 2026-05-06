@@ -32,6 +32,7 @@ mod open_url_runtime;
 mod output;
 mod package;
 mod package_cmd;
+mod package_status;
 mod policy;
 mod profile;
 mod profile_cmd;
@@ -106,6 +107,10 @@ fn main() {
     print_deprecation_warnings(&command_blocking_warnings, cli.silent);
 
     if let Err(e) = run_cli(cli) {
+        if let nono::NonoError::ActionRequired(message) = &e {
+            eprintln!("{message}");
+            std::process::exit(1);
+        }
         // User-initiated stops (declined prompt, non-TTY without
         // NONO_AUTO_MIGRATE) are surfaced as `NonoError::Cancelled`.
         // Their stderr message has already been printed at the call

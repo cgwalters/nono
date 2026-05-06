@@ -494,6 +494,8 @@ IN-BAND DETACH:
   nono profile show claude-code                # Show a fully resolved profile
   nono profile diff default claude-code        # Compare two profiles
   nono profile validate ~/my-profile.json      # Validate a user profile file
+  nono profile validate --draft my-profile     # Validate a profile draft
+  nono profile promote my-profile              # Review and apply a profile draft
   nono profile groups                          # List all policy groups
   nono profile groups deny_credentials         # Show details for a specific group
   nono profile schema                          # Print JSON Schema for editor validation
@@ -734,6 +736,8 @@ pub enum ProfileCommands {
     Diff(ProfileDiffArgs),
     /// Validate a profile JSON file
     Validate(ProfileValidateArgs),
+    /// Review and apply a profile draft from ~/.config/nono/profile-drafts
+    Promote(ProfilePromoteArgs),
     /// List policy groups or show details for a specific group
     Groups(ProfileGroupsArgs),
     /// Output the JSON Schema for profile files
@@ -816,9 +820,13 @@ pub struct ProfileDiffArgs {
 }
 
 #[derive(Parser, Debug)]
+#[command(disable_help_flag = true)]
 pub struct ProfileValidateArgs {
     /// Profile JSON file to validate
     pub file: PathBuf,
+    /// Treat the argument as a draft name under ~/.config/nono/profile-drafts
+    #[arg(long)]
+    pub draft: bool,
     /// Output as JSON
     #[arg(long)]
     pub json: bool,
@@ -829,6 +837,25 @@ pub struct ProfileValidateArgs {
     /// warnings passes as usual.
     #[arg(long)]
     pub strict: bool,
+    /// Print help
+    #[arg(long, short = 'h', action = clap::ArgAction::Help, help_heading = "OPTIONS")]
+    pub help: Option<bool>,
+}
+
+#[derive(Parser, Debug)]
+#[command(disable_help_flag = true)]
+pub struct ProfilePromoteArgs {
+    /// Draft profile name
+    pub name: String,
+    /// Show the proposed diff without applying it
+    #[arg(long)]
+    pub diff: bool,
+    /// Apply without interactive confirmation
+    #[arg(long)]
+    pub yes: bool,
+    /// Print help
+    #[arg(long, short = 'h', action = clap::ArgAction::Help, help_heading = "OPTIONS")]
+    pub help: Option<bool>,
 }
 
 #[derive(Parser, Debug)]

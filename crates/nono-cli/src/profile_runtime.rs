@@ -266,18 +266,18 @@ fn prepare_profile_with_options(
     workdir: &Path,
     options: PrepareProfileOptions,
 ) -> crate::Result<PreparedProfile> {
-    // Ensure the user-profile dir exists before the sandbox is built.
-    // It's a nono-managed location that profiles routinely reference
-    // in `filesystem.allow` (so a sandboxed agent can write extension
-    // profiles there following hook guidance), but Landlock can't
-    // mkdir a path that's only granted by name — the parent needs
-    // write permission. Pre-creating here means the leaf grant is
-    // sufficient. Best-effort: a permission error here just means the
-    // sandbox will deny writes the same as before.
+    // Ensure nono-managed profile dirs exist before the sandbox is built.
+    // Landlock can't mkdir a path that's only granted by name — the
+    // parent needs write permission. Pre-creating here means the leaf
+    // grants in pack profiles are sufficient.
     if let Ok(config_dir) = profile::resolve_user_config_dir() {
         let profiles_dir = config_dir.join("nono").join("profiles");
         if !profiles_dir.exists() {
             let _ = std::fs::create_dir_all(&profiles_dir);
+        }
+        let drafts_dir = config_dir.join("nono").join("profile-drafts");
+        if !drafts_dir.exists() {
+            let _ = std::fs::create_dir_all(&drafts_dir);
         }
     }
 
@@ -286,6 +286,10 @@ fn prepare_profile_with_options(
         // `load_profile` itself so it fires from every call site (run,
         // wrap, shell, profile show, why, learn) without duplication.
         let profile = profile::load_profile(profile_name)?;
+        crate::package_status::enforce_for_active_profile(
+            Some(profile_name),
+            options.hook_output_silent,
+        )?;
         verify_profile_packs(&profile.packs)?;
 
         if !profile.packs.is_empty() && !options.hook_output_silent {

@@ -1902,13 +1902,16 @@ fn merge_implicit_default_groups(profile: &mut Profile) -> Result<()> {
 /// Used during inheritance resolution to load base profiles without
 /// triggering infinite recursion.
 fn parse_profile_file(path: &Path) -> Result<Profile> {
-    let content = fs::read_to_string(path).map_err(|e| NonoError::ProfileRead {
+    let content = fs::read(path).map_err(|e| NonoError::ProfileRead {
         path: path.to_path_buf(),
         source: e,
     })?;
+    parse_profile_bytes(&content)
+}
 
+pub(crate) fn parse_profile_bytes(content: &[u8]) -> Result<Profile> {
     let profile: Profile =
-        serde_json::from_str(&content).map_err(|e| NonoError::ProfileParse(e.to_string()))?;
+        serde_json::from_slice(content).map_err(|e| NonoError::ProfileParse(e.to_string()))?;
 
     // Validate custom credentials for security issues
     validate_profile_custom_credentials(&profile)?;
@@ -2276,12 +2279,25 @@ pub(crate) fn dedup_append<T: Eq + std::hash::Hash + Clone>(base: &[T], child: &
 
 /// Get the path to a user profile
 pub(crate) fn get_user_profile_path(name: &str) -> Result<PathBuf> {
-    let config_dir = resolve_user_config_dir()?;
+    Ok(user_profile_dir()?.join(format!("{}.json", name)))
+}
 
-    Ok(config_dir
+pub(crate) fn user_profile_dir() -> Result<PathBuf> {
+    Ok(resolve_user_config_dir()?.join("nono").join("profiles"))
+}
+
+pub(crate) fn user_profile_draft_dir() -> Result<PathBuf> {
+    Ok(resolve_user_config_dir()?
         .join("nono")
-        .join("profiles")
-        .join(format!("{}.json", name)))
+        .join("profile-drafts"))
+}
+
+pub(crate) fn get_user_profile_draft_path(name: &str) -> Result<PathBuf> {
+    Ok(user_profile_draft_dir()?.join(format!("{}.json", name)))
+}
+
+pub(crate) fn get_user_profile_draft_base_path(name: &str) -> Result<PathBuf> {
+    Ok(user_profile_draft_dir()?.join(format!("{}.base", name)))
 }
 
 /// Resolve the user config directory with secure validation.
