@@ -22,7 +22,7 @@ On install, the CLI:
 3. Verifies Sigstore bundles locally.
 4. Checks that the signer repository org matches the pack namespace.
 5. Pins the signer identity in a local lockfile.
-6. Installs verified artifacts into the pack store (`~/.local/share/nono/packs/`).
+6. Installs verified artifacts into the pack store (`~/.config/nono/packages/`).
 
 ### Pinning a Version
 
@@ -128,7 +128,7 @@ nono pull acme-corp/internal-agent
 
 ## Pack Store Layout
 
-Installed packs live under `~/.local/share/nono/packs/<namespace>/<name>/`. Each pack directory contains the verified artifacts and a lockfile entry tracking the installed version and signer identity.
+Installed packs live under `~/.config/nono/packages/<namespace>/<name>/`. Each pack directory contains the verified artifacts and a lockfile entry tracking the installed version and signer identity.
 
 Profiles from packs are automatically available to `--profile`. Use `nono profile list` to see all available profiles and their source (user, pack, or preset).
 

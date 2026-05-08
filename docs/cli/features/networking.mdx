@@ -11,7 +11,7 @@ The proxy supports three modes that can be combined in a single session:
 
 | Mode | What it does | Activated by |
 |------|-------------|--------------|
-| **CONNECT tunnel** | Domain-filtered HTTPS tunnelling. Validates the target host against an allowlist, then relays raw TCP bytes. TLS is end-to-end — the proxy never sees plaintext. | `--allow-domain`, `--network-profile` |
+| **CONNECT tunnel** | Domain-filtered HTTPS tunneling. Validates the target host against an allowlist, then relays raw TCP bytes. TLS is end-to-end — the proxy never sees plaintext. | `--allow-domain`, `--network-profile` |
 | **Reverse proxy** | Credential injection for API calls. Requests arrive at `http://localhost:<port>/<service>/...`, the proxy injects the real API key and forwards to the upstream over TLS. | `--credential` |
 | **External proxy** | Enterprise proxy passthrough. CONNECT requests are chained through a corporate proxy. Cloud metadata endpoints are still denied. | `--upstream-proxy` |
 
