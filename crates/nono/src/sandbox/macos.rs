@@ -1225,8 +1225,10 @@ mod tests {
         assert!(
             profile.contains("(allow file-read* (extension \"com.apple.app-sandbox.read-write\"))")
         );
-        assert!(profile
-            .contains("(allow file-write* (extension \"com.apple.app-sandbox.read-write\"))"));
+        assert!(
+            profile
+                .contains("(allow file-write* (extension \"com.apple.app-sandbox.read-write\"))")
+        );
     }
 
     #[test]
@@ -1330,8 +1332,11 @@ mod tests {
             profile.contains("(allow network-outbound (path \"/private/var/run/mDNSResponder\"))")
         );
         assert!(profile.contains("(allow network-outbound (path \"/var/run/mDNSResponder\"))"));
-        assert!(profile
-            .contains("(allow system-socket (socket-domain AF_UNIX) (socket-type SOCK_STREAM))"));
+        assert!(
+            profile.contains(
+                "(allow system-socket (socket-domain AF_UNIX) (socket-type SOCK_STREAM))"
+            )
+        );
         // Should NOT have general outbound allow
         assert!(!profile.contains("(allow network-outbound)\n"));
         // Should NOT have bind/inbound without bind_ports
@@ -1708,8 +1713,11 @@ mod tests {
             profile.contains("(allow network-outbound (path \"/private/var/run/mDNSResponder\"))")
         );
         assert!(profile.contains("(allow network-outbound (path \"/var/run/mDNSResponder\"))"));
-        assert!(profile
-            .contains("(allow system-socket (socket-domain AF_UNIX) (socket-type SOCK_STREAM))"));
+        assert!(
+            profile.contains(
+                "(allow system-socket (socket-domain AF_UNIX) (socket-type SOCK_STREAM))"
+            )
+        );
     }
 
     #[test]

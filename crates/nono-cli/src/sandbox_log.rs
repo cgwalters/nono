@@ -402,7 +402,7 @@ fn parse_event_message(filter: &ViolationFilter, message: &str) -> Option<Sandbo
 
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
-    use super::{parse_event_message, parse_violation_line, ViolationFilter};
+    use super::{ViolationFilter, parse_event_message, parse_violation_line};
 
     fn pid_filter(pid: i32) -> ViolationFilter {
         ViolationFilter {
