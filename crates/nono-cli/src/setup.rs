@@ -128,7 +128,7 @@ impl SetupRunner {
 
             if pid == 0 {
                 // Child process: try to apply sandbox
-                extern "C" {
+                unsafe extern "C" {
                     fn sandbox_init(
                         profile: *const std::os::raw::c_char,
                         flags: u64,

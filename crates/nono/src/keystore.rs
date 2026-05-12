@@ -1033,10 +1033,9 @@ fn load_from_apple_password(uri: &str) -> Result<Zeroizing<String>> {
             "macOS security CLI",
             "Is Keychain access waiting for user approval?",
         )
-        .map_err(|e| {
+        .inspect_err(|_| {
             let _ = child.kill();
             let _ = child.wait();
-            e
         })?;
 
         if !output.status.success() {
