@@ -365,6 +365,33 @@ directory. Non-recursive. Use for runtime-generated socket filenames.
 nono run --block-net --allow-unix-socket-dir-bind $TMPDIR/tsx-$UID -- tsx app.ts
 ```
 
+<Note>
+  On macOS, `--allow-unix-socket-dir*` is enforced as direct-child-only socket
+  access. On current Linux, pathname AF_UNIX grants are enforced through the
+  implied Landlock filesystem directory grant, which is recursive. The
+  direct-child distinction becomes enforceable on Linux when the seccomp
+  AF_UNIX allowlist path is active.
+</Note>
+
+#### `--allow-unix-socket-subtree`
+
+Allow `connect(2)` to any AF_UNIX socket within this directory subtree
+(recursive — nested subdirectories are covered). Implies read access on the
+directory.
+
+```bash
+nono run --block-net --allow-unix-socket-subtree $TMPDIR/nx -- nx serve
+```
+
+#### `--allow-unix-socket-subtree-bind`
+
+Allow `connect(2)` and `bind(2)` on any AF_UNIX socket within this directory
+subtree. Implies read/write access on the directory.
+
+```bash
+nono run --block-net --allow-unix-socket-subtree-bind $TMPDIR/nx -- nx serve
+```
+
 ### Network Control
 
 #### `--block-net`
