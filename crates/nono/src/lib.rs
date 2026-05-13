@@ -64,7 +64,7 @@ pub mod undo;
 // Re-exports for convenience
 pub use capability::{
     AccessMode, CapabilitySet, CapabilitySource, FsCapability, IpcMode, NetworkMode,
-    ProcessInfoMode, SignalMode, UnixSocketCapability, UnixSocketMode, UnixSocketOp,
+    ProcessInfoMode, SignalMode, SocketScope, UnixSocketCapability, UnixSocketMode, UnixSocketOp,
 };
 pub use diagnostic::{
     CommandContext, DenialReason, DenialRecord, DiagnosticFormatter, DiagnosticMode,
@@ -81,7 +81,7 @@ pub use keystore::{
 pub use net_filter::{FilterResult, HostFilter};
 pub use path::try_canonicalize;
 #[cfg(target_os = "linux")]
-pub use sandbox::{DetectedAbi, detect_abi, is_wsl2};
+pub use sandbox::{DetectedAbi, LandlockScopePolicy, detect_abi, is_wsl2, landlock_scope_policy};
 pub use sandbox::{Sandbox, SupportInfo};
 pub use scrub::{
     ScrubPolicy, ScrubPolicyDiff, scrub_argv, scrub_argv_with_policy, scrub_header,

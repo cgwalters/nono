@@ -107,6 +107,7 @@ Check why a path or network operation would be allowed or denied. Designed for b
 ```bash
 nono why --path <PATH> --op <OP> [OPTIONS]
 nono why --host <HOST> [--port <PORT>] [OPTIONS]
+nono why --scope <SCOPE> [OPTIONS]
 nono why --self --path <PATH> --op <OP> [OPTIONS]  # Inside sandbox
 ```
 
@@ -362,6 +363,33 @@ directory. Non-recursive. Use for runtime-generated socket filenames.
 ```bash
 # tsx creates /tmp/tsx-<uid>/<pid>.pipe on every invocation
 nono run --block-net --allow-unix-socket-dir-bind $TMPDIR/tsx-$UID -- tsx app.ts
+```
+
+<Note>
+  On macOS, `--allow-unix-socket-dir*` is enforced as direct-child-only socket
+  access. On current Linux, pathname AF_UNIX grants are enforced through the
+  implied Landlock filesystem directory grant, which is recursive. The
+  direct-child distinction becomes enforceable on Linux when the seccomp
+  AF_UNIX allowlist path is active.
+</Note>
+
+#### `--allow-unix-socket-subtree`
+
+Allow `connect(2)` to any AF_UNIX socket within this directory subtree
+(recursive — nested subdirectories are covered). Implies read access on the
+directory.
+
+```bash
+nono run --block-net --allow-unix-socket-subtree $TMPDIR/nx -- nx serve
+```
+
+#### `--allow-unix-socket-subtree-bind`
+
+Allow `connect(2)` and `bind(2)` on any AF_UNIX socket within this directory
+subtree. Implies read/write access on the directory.
+
+```bash
+nono run --block-net --allow-unix-socket-subtree-bind $TMPDIR/nx -- nx serve
 ```
 
 ### Network Control
@@ -1042,6 +1070,12 @@ Capabilities that would be granted:
 Would execute: my-agent
 ```
 
+On Linux, combine `--dry-run` with `-v` to include detected Landlock ABI details and requested/enforced scope state:
+
+```bash
+nono run --dry-run -v --profile claude-code -- claude
+```
+
 #### `--verbose`, `-v`
 
 Increase logging verbosity. Can be specified multiple times.
@@ -1127,6 +1161,17 @@ Network port (default: 443). Used with `--host`.
 ```bash
 nono why --host example.com --port 8080
 ```
+
+### `--scope`
+
+Landlock scope to check. Supported values are `signal` and `abstract-unix-socket`.
+
+```bash
+nono why --scope signal --profile claude-code
+nono why --scope abstract-unix-socket --profile claude-code
+```
+
+On Linux, scope queries report whether the effective capability set requested the scope, whether the detected Landlock ABI can support it, and whether nono will enforce it. On non-Linux platforms, scope queries return `not_applicable`.
 
 ### `--json`
 
