@@ -119,7 +119,9 @@ Landlock is:
 - **Inherited** — all child processes and threads inherit the ruleset
 - **Available** — present on any kernel 5.13+ (Ubuntu 22.04+, Fedora 35+, Debian 12+)
 
-This layer alone provides a complete sandbox. A process restricted by Landlock cannot access paths outside its allowed set, period. The second layer exists to make the sandbox more usable, not more secure.
+This layer provides a strong sandbox for file content access. A process restricted by Landlock cannot read or write paths outside its allowed set. The second layer exists to make the sandbox more usable, not more secure.
+
+Note that Landlock does not mediate all file-related syscalls. Operations like `chmod(2)`, `chown(2)`, and `setxattr(2)` are not currently restricted by Landlock — a sandboxed process can change metadata on paths it can name by path, even without read or write access to those paths. See [Landlock limitations](/cli/internals/landlock#file-metadata-operations-chmod-chown-setxattr-utime) for details.
 
 ### Layer 2: seccomp-notify (the gate)
 

@@ -268,6 +268,16 @@ Without ABI v4 (kernel 6.7+), Landlock cannot filter TCP connections. nono will 
 
 Note: DNS resolution (UDP) is not blocked by Landlock, only TCP connections.
 
+### File Metadata Operations (chmod, chown, setxattr, utime)
+
+Landlock does not mediate syscalls that modify file metadata: `chmod(2)`, `chown(2)`, `setxattr(2)`, `utime(2)`, `fcntl(2)`, and `flock(2)`. A sandboxed process can call these on any file it can name by path, regardless of whether Landlock grants read or write access to that path.
+
+This is a [documented limitation of Landlock](https://docs.kernel.org/userspace-api/landlock.html) that applies to all current ABI versions. Future kernel releases are expected to add mediation for these operations.
+
+**Practical impact:** A sandboxed agent can change the host-visible permission bits on files and directories it owns. For example, it can make a previously mode-700 home directory world-readable. Landlock still prevents the agent from reading or writing those files itself, but the changed permissions persist after the session ends and are visible to other processes running on the host. This is not a bypass of Landlock's read/write enforcement — it is a metadata gap.
+
+If your threat model requires protection against this, run nono inside a container or microVM where the sandboxed process does not share the host filesystem namespace.
+
 ### Bind Mounts
 
 Landlock follows bind mounts. If `/home` is bind-mounted to `/mnt/home`, access to one affects the other. This is usually not a concern but can be surprising in complex mount configurations.
